@@ -110,12 +110,18 @@ class KerasVLLMAdapter(torch.nn.Module):
 
     def __init__(
         self,
-        vllm_config: Any,
+        vllm_config: Any = None,
         rng: Any = None,
         mesh: Any = None,
+        prefix: str = "",
         **kwargs: Any,
     ):
         """Initializes the adapter and loads the underlying KerasHub model.
+
+        ``prefix`` is required for vLLM to recognize this as a "new-style"
+        model class (it checks for both ``vllm_config`` and ``prefix`` in the
+        signature); otherwise vLLM falls back to old-style arg-guessing and
+        fails to pass ``vllm_config``.
 
         Args:
             vllm_config: Configuration from vLLM including the huggingface config.
