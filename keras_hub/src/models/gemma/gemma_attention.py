@@ -261,7 +261,13 @@ class CachedGemmaAttention(keras.layers.Layer):
             )
 
             attention_vec, new_kv_cache = maybe_vllm_paged_attention(
-                query, key, value, cache, scale, sliding_window=sliding_window
+                query,
+                key,
+                value,
+                cache,
+                scale,
+                sliding_window=sliding_window,
+                soft_cap=getattr(self, "logit_soft_cap", None),
             )
             attention_output = self.output_dense(attention_vec)
             if cache is not None or new_kv_cache is not None:

@@ -21,6 +21,7 @@ def maybe_vllm_paged_attention(
     cache: Any,
     scale: float,
     sliding_window: Optional[int] = None,
+    soft_cap: Optional[float] = None,
 ) -> Optional[Tuple[Any, Any]]:
     """Run vLLM's injected Pallas paged-attention kernel, if active.
 
@@ -69,6 +70,13 @@ def maybe_vllm_paged_attention(
     key = ops.reshape(key, (-1, num_kv_heads * head_dim))
     value = ops.reshape(value, (-1, num_kv_heads * head_dim))
 
+    # `soft_cap` is only forwarded when set (Gemma 2/3); omitting it keeps this
+    # call compatible with tpu-inference builds whose kernel dispatch predates
+    # soft-cap plumbing.
+    extra = {"sliding_window": sliding_window}
+    if soft_cap is not None:
+        extra["soft_cap"] = soft_cap
+
     new_kv_cache, attention_output = ctx.paged_attention_func(
         cache,
         query,
@@ -81,7 +89,7 @@ def maybe_vllm_paged_attention(
         head_dim,
         num_heads,
         num_kv_heads,
-        sliding_window=sliding_window,
+        **extra,
     )
 
     # Kernel returns (num_tokens, num_heads * head_dim); restore KerasHub layout.
