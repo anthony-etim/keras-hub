@@ -50,6 +50,32 @@ def _export_hf_tokenizer(tokenizer, temp_dir: str) -> bool:
             f.write("#version: 0.2\n" + merges_content)
 
     eos = "<|endoftext|>"
+
+    # Prefer emitting a fast tokenizer (tokenizer.json), which vLLM v1's
+    # incremental detokenizer favors. Building GPT2TokenizerFast from the
+    # vocab/merges and calling save_pretrained writes tokenizer.json plus
+    # consistent tokenizer_config.json / special_tokens_map.json.
+    try:
+        from transformers import GPT2TokenizerFast
+
+        fast = GPT2TokenizerFast(
+            vocab_file=vocab_dst,
+            merges_file=merges_path,
+            unk_token=eos,
+            bos_token=eos,
+            eos_token=eos,
+            add_prefix_space=False,
+        )
+        fast.save_pretrained(temp_dir)
+        return True
+    except Exception as e:  # noqa: BLE001 - fall back to the slow tokenizer
+        logging.warning(
+            "Could not emit fast tokenizer.json (%s); writing slow GPT2Tokenizer "
+            "config instead.",
+            e,
+        )
+
+    # Slow-tokenizer fallback: minimal config over vocab.json + merges.txt.
     with open(
         os.path.join(temp_dir, "tokenizer_config.json"), "w", encoding="utf-8"
     ) as f:
