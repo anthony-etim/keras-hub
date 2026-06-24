@@ -271,9 +271,16 @@ class KerasVLLMAdapter(torch.nn.Module):
         except (ImportError, AssertionError):
             pass
 
+        # VllmModelWrapper invokes the model as `model(**kwargs)`, so inputs
+        # arrive as keyword args; fall back to positional for other callers.
+        def _arg(idx, name):
+            if len(args) > idx:
+                return args[idx]
+            return kwargs.get(name)
+
         if is_tpu:
-            input_ids = args[0]
-            positions = args[1]
+            input_ids = _arg(0, "input_ids")
+            positions = _arg(1, "positions")
             try:
                 from vllm.forward_context import (
                     get_forward_context,
@@ -284,15 +291,15 @@ class KerasVLLMAdapter(torch.nn.Module):
                     fc = get_forward_context()
                     attn_metadata = fc.attn_metadata
                 else:
-                    attn_metadata = args[3] if len(args) > 3 else kwargs.get("attn_metadata")
+                    attn_metadata = _arg(3, "attn_metadata")
             except ImportError:
-                attn_metadata = args[3] if len(args) > 3 else kwargs.get("attn_metadata")
+                attn_metadata = _arg(3, "attn_metadata")
             kv_caches = vllm_ctx.kv_caches if vllm_ctx is not None else None
         else:
-            input_ids = args[0]
-            positions = args[1]
-            kv_caches = args[2] if len(args) > 2 else kwargs.get("kv_caches")
-            attn_metadata = args[3] if len(args) > 3 else kwargs.get("attn_metadata")
+            input_ids = _arg(0, "input_ids")
+            positions = _arg(1, "positions")
+            kv_caches = _arg(2, "kv_caches")
+            attn_metadata = _arg(3, "attn_metadata")
 
         import keras
 
