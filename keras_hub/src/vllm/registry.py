@@ -14,15 +14,79 @@ import tempfile
 from keras_hub.src.vllm.adapter import KerasVLLMAdapter
 
 
+def _verify_tokenizer_dir(temp_dir: str) -> bool:
+    """Loads the exported tokenizer back and checks it tokenizes to non-empty.
+
+    Guards against transformers/tokenizers versions that build an empty
+    tokenizer from the exported assets (which is worse than no tokenizer).
+    """
+    from transformers import AutoTokenizer
+
+    rt = AutoTokenizer.from_pretrained(temp_dir)
+    return len(rt("hello world").get("input_ids", [])) > 0
+
+
+def _export_sentencepiece(tokenizer, temp_dir: str, proto: bytes) -> bool:
+    """Exports a KerasHub SentencePiece tokenizer (Gemma/Llama/Mistral) for HF.
+
+    Writes the raw SP proto as `tokenizer.model` plus a tokenizer_config naming
+    the matching HF class, then verifies it round-trips. On failure, removes the
+    files so the caller falls back to skip_tokenizer_init + pre-tokenization.
+    """
+    try:
+        with open(os.path.join(temp_dir, "tokenizer.model"), "wb") as f:
+            f.write(proto)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("Could not write SentencePiece tokenizer.model: %s", e)
+        return False
+
+    cls_name = type(tokenizer).__name__.lower()
+    hf_class = "GemmaTokenizer" if "gemma" in cls_name else "LlamaTokenizer"
+    with open(
+        os.path.join(temp_dir, "tokenizer_config.json"), "w", encoding="utf-8"
+    ) as f:
+        json.dump(
+            {
+                "tokenizer_class": hf_class,
+                "legacy": False,
+                "add_bos_token": True,
+                "add_eos_token": False,
+            },
+            f,
+        )
+
+    try:
+        if _verify_tokenizer_dir(temp_dir):
+            return True
+        raise ValueError("exported SentencePiece tokenizer produced empty output")
+    except Exception as e:  # noqa: BLE001
+        logging.warning(
+            "SentencePiece tokenizer unusable (%s); use skip_tokenizer_init=True "
+            "+ pre-tokenized input for this preset.",
+            e,
+        )
+        for fn in ("tokenizer.model", "tokenizer.json", "tokenizer_config.json"):
+            p = os.path.join(temp_dir, fn)
+            if os.path.exists(p):
+                os.remove(p)
+        return False
+
+
 def _export_hf_tokenizer(tokenizer, temp_dir: str) -> bool:
     """Writes HF-compatible tokenizer files so vLLM can tokenize raw text.
 
-    KerasHub's byte-level BPE tokenizers (GPT-2, OPT, ...) share GPT-2's
-    vocab/merges format, so we export them and let vLLM load a stock
-    `GPT2Tokenizer`. Returns True on success. SentencePiece presets (Gemma,
-    Llama, Mistral) are not handled yet — callers should fall back to
-    ``skip_tokenizer_init=True`` + pre-tokenization for those.
+    Handles KerasHub's byte-level BPE tokenizers (GPT-2, OPT, ... -> stock
+    `GPT2Tokenizer`) and SentencePiece tokenizers (Gemma, Llama, Mistral ->
+    `tokenizer.model` + Llama/Gemma tokenizer). Returns True on success; on
+    failure the caller should use ``skip_tokenizer_init=True`` + pre-tokenized
+    input.
     """
+    # SentencePiece family: KerasHub stores the serialized proto on `.proto`.
+    proto = getattr(tokenizer, "proto", None)
+    if proto:
+        return _export_sentencepiece(tokenizer, temp_dir, proto)
+
+    # Byte-level BPE family.
     if not (hasattr(tokenizer, "merges") and hasattr(tokenizer, "save_assets")):
         return False
     try:
