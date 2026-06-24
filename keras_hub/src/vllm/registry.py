@@ -56,7 +56,7 @@ def _export_hf_tokenizer(tokenizer, temp_dir: str) -> bool:
     # vocab/merges and calling save_pretrained writes tokenizer.json plus
     # consistent tokenizer_config.json / special_tokens_map.json.
     try:
-        from transformers import GPT2TokenizerFast
+        from transformers import AutoTokenizer, GPT2TokenizerFast
 
         fast = GPT2TokenizerFast(
             vocab_file=vocab_dst,
@@ -67,13 +67,23 @@ def _export_hf_tokenizer(tokenizer, temp_dir: str) -> bool:
             add_prefix_space=False,
         )
         fast.save_pretrained(temp_dir)
-        return True
+        # Verify the emitted tokenizer.json actually round-trips (some
+        # transformers/tokenizers versions build an empty byte-level BPE from
+        # vocab+merges). If it tokenizes to nothing, it's worse than the slow
+        # tokenizer — remove it and fall back.
+        reloaded = AutoTokenizer.from_pretrained(temp_dir)
+        if len(reloaded("hello world").get("input_ids", [])) > 0:
+            return True
+        raise ValueError("emitted fast tokenizer produced empty output")
     except Exception as e:  # noqa: BLE001 - fall back to the slow tokenizer
         logging.warning(
-            "Could not emit fast tokenizer.json (%s); writing slow GPT2Tokenizer "
-            "config instead.",
-            e,
+            "Fast tokenizer.json unusable (%s); using slow GPT2Tokenizer.", e
         )
+        # Remove a possibly-broken tokenizer.json so vLLM loads the slow files
+        # (vocab.json + merges.txt) instead of the bad fast tokenizer.
+        broken = os.path.join(temp_dir, "tokenizer.json")
+        if os.path.exists(broken):
+            os.remove(broken)
 
     # Slow-tokenizer fallback: minimal config over vocab.json + merges.txt.
     with open(
