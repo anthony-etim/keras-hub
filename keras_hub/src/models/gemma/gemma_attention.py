@@ -237,6 +237,37 @@ class CachedGemmaAttention(keras.layers.Layer):
         query = self.query_dense(x)
         query = self._apply_rope(query, cache_update_index)
 
+        # Dispatch to vLLM's native Pallas paged-attention when serving on TPU.
+        from keras_hub.src.vllm.context import get_vllm_context
+
+        vllm_ctx = get_vllm_context()
+        if vllm_ctx is not None and vllm_ctx.paged_attention_func is not None:
+            from keras_hub.src.vllm.attention import maybe_vllm_paged_attention
+
+            key = self.key_dense(x)
+            key = self._apply_rope(key, cache_update_index)
+            value = self.value_dense(x)
+
+            # Match Gemma's own query normalization (the kernel applies `scale`,
+            # so we pass it raw rather than pre-scaling the query).
+            if self.query_head_dim_normalize:
+                scale = 1.0 / np.sqrt(self.head_dim)
+            else:
+                scale = 1.0 / np.sqrt(self.hidden_dim // self.num_query_heads)
+            sliding_window = (
+                self.sliding_window_size
+                if self.use_sliding_window_attention
+                else None
+            )
+
+            attention_vec, new_kv_cache = maybe_vllm_paged_attention(
+                query, key, value, cache, scale, sliding_window=sliding_window
+            )
+            attention_output = self.output_dense(attention_vec)
+            if cache is not None or new_kv_cache is not None:
+                return attention_output, new_kv_cache
+            return attention_output
+
         if cache is not None:
             key_cache = cache[:, 0, ...]
             value_cache = cache[:, 1, ...]
