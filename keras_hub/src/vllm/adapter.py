@@ -361,6 +361,21 @@ class KerasVLLMAdapter(torch.nn.Module):
         if is_gemma:
             x = x * ops.sqrt(ops.cast(hidden_dim, x.dtype))
 
+        # Add learned position embeddings for backbones that use them (GPT-2,
+        # OPT, ...). RoPE-based backbones (Gemma, Llama, Mistral) have no
+        # `position_embedding` layer and apply rotary positions inside attention,
+        # so this is skipped for them. We index by vLLM's `positions` tensor
+        # (not 0..T-1) so decode steps use the correct absolute position.
+        position_embedding = getattr(
+            self.model.backbone, "position_embedding", None
+        )
+        if position_embedding is not None and jax_positions is not None:
+            pos_weight = position_embedding.position_embeddings
+            pos_ids = ops.cast(ops.reshape(jax_positions, (-1,)), "int32")
+            pos_emb = ops.take(pos_weight, pos_ids, axis=0)
+            pos_emb = ops.reshape(pos_emb, ops.shape(x))
+            x = x + ops.cast(pos_emb, x.dtype)
+
         block_tables = None
         if (
             hasattr(attention_metadata, "block_tables")
