@@ -157,7 +157,22 @@ class CachedMistralAttention(keras.layers.Layer):
         if vllm_ctx is not None and vllm_ctx.paged_attention_func is not None:
             from keras_hub.src.vllm.attention import maybe_vllm_paged_attention
 
-            key, value = _compute_key_value(hidden_states)
+            # Apply RoPE with vLLM's per-token absolute positions rather than a
+            # scalar start_index, so paged / continuous-batched decode rotates
+            # each token at its true position. Falls back to the start_index
+            # rope (computed above) if positions aren't available.
+            positions = getattr(vllm_ctx, "positions", None)
+            if positions is not None:
+                positions = ops.reshape(positions, (-1, 1))
+                query = self.rotary_embedding_layer(
+                    self._query_dense(hidden_states), positions=positions
+                )
+                key = self.rotary_embedding_layer(
+                    self._key_dense(hidden_states), positions=positions
+                )
+                value = self._value_dense(hidden_states)
+            else:
+                key, value = _compute_key_value(hidden_states)
             attention_output, new_kv_cache = maybe_vllm_paged_attention(
                 query, key, value, cache, self._inv_norm_factor
             )

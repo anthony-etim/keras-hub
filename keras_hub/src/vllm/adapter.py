@@ -426,7 +426,12 @@ class KerasVLLMAdapter(torch.nn.Module):
         # model-wrapper context on the TPU path.
         mesh = self._get_wrapper_mesh()
         set_vllm_context(
-            block_tables, slot_mapping, attention_metadata, paged_attn_func, mesh
+            block_tables,
+            slot_mapping,
+            attention_metadata,
+            paged_attn_func,
+            mesh,
+            positions=jax_positions,
         )
 
         try:

@@ -15,6 +15,7 @@ class VLLMContext(threading.local):
         attention_metadata: The full attention metadata object from vLLM.
         paged_attention_func: The compiled hardware-specific paged attention kernel.
         mesh: The JAX device mesh required by the paged attention kernel.
+        positions: vLLM's per-token absolute position ids (for RoPE models).
         active: Boolean indicating if the context is currently active.
     """
 
@@ -26,6 +27,7 @@ class VLLMContext(threading.local):
         self.attention_metadata: Optional[Any] = None
         self.paged_attention_func: Optional[Any] = None
         self.mesh: Optional[Any] = None
+        self.positions: Optional[Any] = None
         self.active: bool = False
 
 
@@ -38,6 +40,7 @@ def set_vllm_context(
     attention_metadata: Optional[Any] = None,
     paged_attention_func: Optional[Any] = None,
     mesh: Optional[Any] = None,
+    positions: Optional[Any] = None,
 ) -> None:
     """Sets the thread-local vLLM context parameters.
 
@@ -47,12 +50,16 @@ def set_vllm_context(
         attention_metadata: Additional hardware/framework specific metadata.
         paged_attention_func: The function to use for paged attention.
         mesh: The JAX device mesh the paged attention kernel shards across.
+        positions: vLLM's per-token absolute position ids (used by RoPE models
+            to apply rotary embeddings at the correct positions under paged /
+            continuous-batched decode).
     """
     _vllm_context.block_tables = block_tables
     _vllm_context.slot_mapping = slot_mapping
     _vllm_context.attention_metadata = attention_metadata
     _vllm_context.paged_attention_func = paged_attention_func
     _vllm_context.mesh = mesh
+    _vllm_context.positions = positions
     _vllm_context.active = True
 
 
@@ -63,6 +70,7 @@ def clear_vllm_context() -> None:
     _vllm_context.attention_metadata = None
     _vllm_context.paged_attention_func = None
     _vllm_context.mesh = None
+    _vllm_context.positions = None
     _vllm_context.active = False
 
 
