@@ -278,16 +278,16 @@ def setup_vllm_model(preset: str, dtype: str = "float16") -> str:
 def _derive_arch_config(preset: str) -> dict:
     """Reads the KerasHub backbone config and maps it to HF/vLLM config keys.
 
-    Builds the backbone without weights (cheap) and translates its
-    ``get_config()`` to the fields vLLM uses for KV-cache allocation. Works
-    across families: GPT-2 uses ``num_heads`` (no GQA); Gemma/Llama/Mistral use
-    ``num_query_heads`` / ``num_key_value_heads`` / ``head_dim``.
+    Reads the preset's serialized ``config.json`` directly (no model build, no
+    TPU allocation) and translates its backbone args to the fields vLLM uses for
+    KV-cache allocation. Works across families: GPT-2 uses ``num_heads`` (no
+    GQA); Gemma/Llama/Mistral use ``num_query_heads`` / ``num_key_value_heads``
+    / ``head_dim``.
     """
     try:
-        from keras_hub import models
+        from keras_hub.src.utils import preset_utils
 
-        backbone = models.Backbone.from_preset(preset, load_weights=False)
-        cfg = backbone.get_config()
+        cfg = preset_utils.load_json(preset).get("config", {})
     except Exception as e:  # noqa: BLE001
         logging.warning(
             "Could not derive architecture for %r (%s); vLLM will guess from "
