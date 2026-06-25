@@ -250,10 +250,22 @@ class KerasVLLMAdapter(torch.nn.Module):
         raise NotImplementedError("Embedding is handled internally by Keras Hub backbone.")
 
     def _get_state_mapping(self) -> List[Tuple[Any, Any]]:
-        """Builds the Keras StatelessScope state mapping from the patched buffers."""
-        return [
-            (v, _to_jax(getattr(self, name))) for v, name in self.keras_variable_mapping
-        ]
+        """Builds the Keras StatelessScope state mapping from the patched buffers.
+
+        The weight buffers are immutable after load, so the (variable -> JAX
+        array) mapping is built once and cached. Without this, every decode step
+        re-ran a DLPack conversion over all of the model's weight buffers
+        (hundreds of tensors for a 2B model) on the host before any TPU compute
+        could start — a dominant per-token overhead.
+        """
+        cached = getattr(self, "_state_mapping_cache", None)
+        if cached is None:
+            cached = [
+                (v, _to_jax(getattr(self, name)))
+                for v, name in self.keras_variable_mapping
+            ]
+            self._state_mapping_cache = cached
+        return cached
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
         """Forward pass for vLLM.
@@ -463,10 +475,19 @@ class KerasVLLMAdapter(torch.nn.Module):
             transformer_layers = self._resolve_backbone_component(
                 backbone, ["transformer_layers"], "transformer layers"
             )
+            # All decoder layers share a class/signature, so inspect once and
+            # cache on the instance — the layout is fixed for the model's
+            # lifetime, so this need not run per layer or per forward step.
+            layer_params = getattr(self, "_layer_params_cache", None)
+            if layer_params is None:
+                layer_params = (
+                    set(inspect.signature(transformer_layers[0].call).parameters)
+                    if len(transformer_layers)
+                    else set()
+                )
+                self._layer_params_cache = layer_params
             for i, layer in enumerate(transformer_layers):
                 kwargs = kwargs_base.copy()
-
-                sig = inspect.signature(layer.call)
 
                 cache_tensor = (
                     jax_kv_caches[i]
@@ -474,19 +495,19 @@ class KerasVLLMAdapter(torch.nn.Module):
                     else None
                 )
 
-                if "self_attention_cache" in sig.parameters:
+                if "self_attention_cache" in layer_params:
                     kwargs["self_attention_cache"] = cache_tensor
-                elif "cache" in sig.parameters:
+                elif "cache" in layer_params:
                     if hasattr(layer, "decoder_sequence_length"):
                         kwargs["cache_update_index"] = 0
                     else:
                         kwargs["cache"] = cache_tensor
 
-                if "kv_cache" in sig.parameters:
+                if "kv_cache" in layer_params:
                     kwargs["kv_cache"] = cache_tensor
 
                 supported_kwargs = {
-                    k: v for k, v in kwargs.items() if k in sig.parameters
+                    k: v for k, v in kwargs.items() if k in layer_params
                 }
 
                 out = layer(x, **supported_kwargs)
