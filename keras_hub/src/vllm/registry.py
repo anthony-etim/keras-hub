@@ -184,37 +184,15 @@ def _register_model_architecture() -> None:
         )
 
 
-def _patch_tpu_model_loader() -> None:
-    """Patches vLLM-TPU to treat KerasVLLMAdapter as a JAX-native architecture.
-
-    If we don't do this, older versions of vLLM will fall back to tracing the PyTorch
-    forward pass, which will cause JAX to capture Keras variables as large static constants.
-    """
-    try:
-        from vllm.model_executor import model_loader
-
-        if hasattr(model_loader, "JAX_NATIVE_ARCHITECTURES"):
-            if "KerasVLLMAdapter" not in model_loader.JAX_NATIVE_ARCHITECTURES:
-                model_loader.JAX_NATIVE_ARCHITECTURES = list(
-                    model_loader.JAX_NATIVE_ARCHITECTURES
-                ) + ["KerasVLLMAdapter"]
-        if hasattr(model_loader, "_JAX_NATIVE_ARCHITECTURES"):
-            if "KerasVLLMAdapter" not in model_loader._JAX_NATIVE_ARCHITECTURES:
-                model_loader._JAX_NATIVE_ARCHITECTURES = list(
-                    model_loader._JAX_NATIVE_ARCHITECTURES
-                ) + ["KerasVLLMAdapter"]
-    except (ImportError, AttributeError) as e:
-        logging.debug("vLLM TPU model_loader patch skipped: %s", e)
-
-
 def register_keras_hub_models() -> None:
-    """Registers the keras_hub schema with vLLM's internal ModelRegistry.
+    """Registers KerasVLLMAdapter with vLLM via its sanctioned ModelRegistry.
 
-    When `setup_vllm_model` is used to create a model directory, vLLM will
-    natively load the `KerasVLLMAdapter`.
+    No monkeypatching: architecture recognition goes through vLLM's public
+    `ModelRegistry.register_model` here, and through tpu-inference's native
+    `_get_model_architecture` hook on the serving side. When `setup_vllm_model`
+    materializes a model directory, vLLM loads the `KerasVLLMAdapter`.
     """
     _register_model_architecture()
-    _patch_tpu_model_loader()
 
 
 def setup_vllm_model(preset: str, dtype: str = "float16") -> str:
