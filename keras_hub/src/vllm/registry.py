@@ -324,3 +324,51 @@ def keras_hub_llm(preset: str, dtype: str = "bfloat16", **llm_kwargs):
     model_dir = setup_vllm_model(preset, dtype=dtype)
     llm_kwargs.setdefault("tokenizer", model_dir)
     return LLM(model=model_dir, **llm_kwargs)
+
+
+# vLLM is optional at import time, so the subclass is defined only when present.
+try:
+    from vllm import LLM as _BaseLLM
+except Exception:  # noqa: BLE001 - vllm not installed / import failure
+    _BaseLLM = None
+
+
+if _BaseLLM is not None:
+
+    class KerasHubLLM(_BaseLLM):
+        """A `vllm.LLM` that accepts the ``keras_hub:<preset>`` model scheme.
+
+        This is plain subclassing (no monkeypatching): a ``keras_hub:`` model
+        string is normalized into a materialized model directory (config +
+        tokenizer) before delegating to ``vllm.LLM``. Any other model string is
+        passed straight through, so the class behaves exactly like ``vllm.LLM``
+        for non-KerasHub models.
+
+        Example::
+
+            from keras_hub.src.vllm import KerasHubLLM
+            llm = KerasHubLLM("keras_hub:gpt2_base_en")
+            llm.generate(["The future of AI is"], sampling_params)
+        """
+
+        def __init__(self, model, **kwargs):
+            if isinstance(model, str) and model.startswith("keras_hub:"):
+                preset = model.split("keras_hub:", 1)[1]
+                # dtype defaults to bf16 (TPU paged KV cache); consumed here, not
+                # forwarded — the exported config.json carries torch_dtype.
+                dtype = kwargs.pop("dtype", "bfloat16")
+                os.environ.setdefault("MODEL_IMPL_TYPE", "vllm")
+                register_keras_hub_models()
+                model = setup_vllm_model(preset, dtype=dtype)
+                kwargs.setdefault("tokenizer", model)
+            super().__init__(model=model, **kwargs)
+
+else:
+
+    class KerasHubLLM:  # pragma: no cover - exercised only without vLLM
+        """Placeholder when vLLM is unavailable; raises on use."""
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "KerasHubLLM requires vLLM. Install vllm (or vllm-tpu) first."
+            )
