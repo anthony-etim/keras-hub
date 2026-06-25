@@ -263,10 +263,61 @@ def setup_vllm_model(preset: str, dtype: str = "float16") -> str:
             getattr(tokenizer, "start_token_id", None) or eos_token_id
         )
 
+    # Write the REAL architecture dims so vLLM allocates a matching KV cache.
+    # Without these, vLLM guesses from `model_type` (e.g. "gemma2" -> HF
+    # Gemma-2 defaults), which mismatches the actual KerasHub backbone and fails
+    # the kernel's kv_cache-shape check (num_kv_heads / num_layers / head_dim).
+    config_dict.update(_derive_arch_config(preset))
+
     with open(os.path.join(temp_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(config_dict, f)
 
     return temp_dir
+
+
+def _derive_arch_config(preset: str) -> dict:
+    """Reads the KerasHub backbone config and maps it to HF/vLLM config keys.
+
+    Builds the backbone without weights (cheap) and translates its
+    ``get_config()`` to the fields vLLM uses for KV-cache allocation. Works
+    across families: GPT-2 uses ``num_heads`` (no GQA); Gemma/Llama/Mistral use
+    ``num_query_heads`` / ``num_key_value_heads`` / ``head_dim``.
+    """
+    try:
+        from keras_hub import models
+
+        backbone = models.Backbone.from_preset(preset, load_weights=False)
+        cfg = backbone.get_config()
+    except Exception as e:  # noqa: BLE001
+        logging.warning(
+            "Could not derive architecture for %r (%s); vLLM will guess from "
+            "model_type, which may mismatch the KV cache.",
+            preset,
+            e,
+        )
+        return {}
+
+    hidden = cfg.get("hidden_dim")
+    n_heads = cfg.get("num_query_heads") or cfg.get("num_heads")
+    n_kv = cfg.get("num_key_value_heads") or n_heads
+    head_dim = cfg.get("head_dim")
+    if head_dim is None and hidden and n_heads:
+        head_dim = hidden // n_heads
+
+    arch = {}
+    if cfg.get("num_layers"):
+        arch["num_hidden_layers"] = int(cfg["num_layers"])
+    if n_heads:
+        arch["num_attention_heads"] = int(n_heads)
+    if n_kv:
+        arch["num_key_value_heads"] = int(n_kv)
+    if head_dim:
+        arch["head_dim"] = int(head_dim)
+    if hidden:
+        arch["hidden_size"] = int(hidden)
+    if cfg.get("intermediate_dim"):
+        arch["intermediate_size"] = int(cfg["intermediate_dim"])
+    return arch
 
 
 # vLLM is optional at import time, so the subclass is defined only when present.
