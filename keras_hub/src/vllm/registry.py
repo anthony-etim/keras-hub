@@ -289,3 +289,38 @@ def setup_vllm_model(preset: str, dtype: str = "float16") -> str:
         json.dump(config_dict, f)
 
     return temp_dir
+
+
+def keras_hub_llm(preset: str, dtype: str = "bfloat16", **llm_kwargs):
+    """One-line constructor: a `vllm.LLM` serving a KerasHub preset.
+
+    Wraps the registration + `setup_vllm_model` + `LLM(...)` dance so callers
+    can simply do::
+
+        from keras_hub.src.vllm import keras_hub_llm
+        llm = keras_hub_llm("gpt2_base_en")
+        llm.generate(["The future of AI is"], sampling_params)
+
+    `dtype` defaults to bfloat16 to match the TPU paged KV cache. Extra keyword
+    args (e.g. `max_model_len`, `enforce_eager`, `gpu_memory_utilization`) are
+    forwarded to `vllm.LLM`. Set `KERAS_BACKEND=jax` (and other env vars) before
+    importing keras/vllm, as usual.
+
+    Args:
+        preset: KerasHub preset name (e.g. "gpt2_base_en").
+        dtype: torch dtype string for inference.
+        **llm_kwargs: forwarded to `vllm.LLM` (e.g. tokenizer override).
+
+    Returns:
+        A constructed `vllm.LLM` instance.
+    """
+    from vllm import LLM
+
+    # KerasVLLMAdapter is a torch.nn.Module and must use tpu-inference's
+    # torchax path, not the flax/nnx path. Set only if the caller hasn't.
+    os.environ.setdefault("MODEL_IMPL_TYPE", "vllm")
+
+    register_keras_hub_models()
+    model_dir = setup_vllm_model(preset, dtype=dtype)
+    llm_kwargs.setdefault("tokenizer", model_dir)
+    return LLM(model=model_dir, **llm_kwargs)

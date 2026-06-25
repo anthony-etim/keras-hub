@@ -336,6 +336,24 @@ class KerasVLLMAdapter(torch.nn.Module):
         except (ImportError, AssertionError):
             return None
 
+    @staticmethod
+    def _resolve_backbone_component(backbone: Any, names: List[str], what: str) -> Any:
+        """Returns the first attribute in ``names`` present on ``backbone``.
+
+        Raises a clear error if none are found, so an unsupported backbone fails
+        loudly rather than with a cryptic AttributeError mid-forward.
+        """
+        for name in names:
+            component = getattr(backbone, name, None)
+            if component is not None:
+                return component
+        raise AttributeError(
+            f"KerasVLLMAdapter could not find the {what} on backbone "
+            f"{type(backbone).__name__} (tried {names}). The vLLM forward "
+            f"re-implements the backbone and expects a standard KerasHub "
+            f"decoder layout (token_embedding, transformer_layers, final norm)."
+        )
+
     def forward_step(
         self,
         input_ids: torch.Tensor,
@@ -352,9 +370,20 @@ class KerasVLLMAdapter(torch.nn.Module):
         if len(jax_input_ids.shape) == 1:
             jax_input_ids = ops.expand_dims(jax_input_ids, axis=-1)
 
-        x = self.model.backbone.token_embedding(jax_input_ids)
+        # This method re-implements the backbone forward so per-layer paged KV
+        # caches can be threaded into each attention layer. It assumes a standard
+        # KerasHub decoder layout: a `token_embedding`, an iterable of
+        # `transformer_layers`, and a final norm; optionally a learned
+        # `position_embedding`. Components are resolved defensively so an
+        # unsupported backbone fails with a clear message instead of an
+        # AttributeError deep in the loop.
+        backbone = self.model.backbone
+        token_embedding = self._resolve_backbone_component(
+            backbone, ["token_embedding"], "token embedding"
+        )
+        x = token_embedding(jax_input_ids)
 
-        hidden_dim = self.model.backbone.hidden_dim
+        hidden_dim = backbone.hidden_dim
         is_gemma = (
             getattr(self, "preset_name", "") and "gemma" in self.preset_name.lower()
         )
@@ -366,9 +395,7 @@ class KerasVLLMAdapter(torch.nn.Module):
         # `position_embedding` layer and apply rotary positions inside attention,
         # so this is skipped for them. We index by vLLM's `positions` tensor
         # (not 0..T-1) so decode steps use the correct absolute position.
-        position_embedding = getattr(
-            self.model.backbone, "position_embedding", None
-        )
+        position_embedding = getattr(backbone, "position_embedding", None)
         if position_embedding is not None and jax_positions is not None:
             pos_weight = position_embedding.position_embeddings
             pos_ids = ops.cast(ops.reshape(jax_positions, (-1,)), "int32")
@@ -428,7 +455,10 @@ class KerasVLLMAdapter(torch.nn.Module):
             if kv_caches is not None:
                 jax_kv_caches = [_to_jax(cache) for cache in kv_caches]
 
-            for i, layer in enumerate(self.model.backbone.transformer_layers):
+            transformer_layers = self._resolve_backbone_component(
+                backbone, ["transformer_layers"], "transformer layers"
+            )
+            for i, layer in enumerate(transformer_layers):
                 kwargs = kwargs_base.copy()
 
                 sig = inspect.signature(layer.call)
@@ -463,7 +493,12 @@ class KerasVLLMAdapter(torch.nn.Module):
                 else:
                     x = out
 
-            hidden_states = self.model.backbone.layer_norm(x)
+            final_norm = self._resolve_backbone_component(
+                backbone,
+                ["layer_norm", "final_layer_norm", "norm"],
+                "final norm",
+            )
+            hidden_states = final_norm(x)
 
             if len(hidden_states.shape) == 3 and hidden_states.shape[1] == 1:
                 hidden_states = ops.squeeze(hidden_states, axis=1)

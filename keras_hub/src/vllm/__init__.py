@@ -6,6 +6,7 @@ models natively as the backend for LLM generation.
 """
 
 from .adapter import KerasVLLMAdapter
+from .registry import keras_hub_llm
 from .registry import register_keras_hub_models
 from .registry import setup_vllm_model
 from .tokenizer import KerasVLLMTokenizerAdapter
@@ -13,6 +14,7 @@ from .tokenizer import KerasVLLMTokenizerAdapter
 __all__ = [
     "KerasVLLMAdapter",
     "KerasVLLMTokenizerAdapter",
+    "keras_hub_llm",
     "register_keras_hub_models",
     "setup_vllm_model",
 ]
